@@ -17,6 +17,7 @@ Goal: repo scaffold, CI, pure domain logic with parity tests, pipeline, Postgres
 - [ ] **M0.1 Repo & local stack scaffold (`OPS-01`, `OPS-04`)**
   - Create `/backend/dtuca/` (Python 3.14, FastAPI, Pydantic v2, SQLAlchemy 2, Alembic, pytest, mypy/pyright, ruff), `/web/` (Next.js App Router, TypeScript strict, Tailwind + shadcn/ui), and `/infra/docker-compose.yml` (Postgres 18 + api + web).
   - Add GitHub Actions CI workflow: lint, type check, unit tests.
+  - Enable CodeQL code scanning (repo Settings → Code security → default setup) for Python and JavaScript/TypeScript once both exist; it's free on public repos.
 - [ ] **M0.2 Postgres schema & initial migration (`02-architecture.md §3`)**
   - Model catalogue tables (`dataset_release`, `course`, `course_term_stats`, `prereq_edge`, `prereq_hint`, `course_person`, `person`, `study_line`, `course_study_line`, `course_embedding`, `vocabulary_map`) and user/feedback tables (`app_user`, `web_session`, `plan`, `plan_item`, `plan_version`, `pending_approval`, `plan_star`, `plan_report`, `personal_token`, `assistant_conversation`, `assistant_message`, `llm_usage_daily`, `feedback`).
 - [ ] **M0.3 Pure `domain/` core (`OPS-02`, `DQ-02`, `DQ-03`)**
