@@ -67,7 +67,8 @@ The api validates tokens through one `auth.py` module, so either path plugs in w
   pipeline/     fetch/, parse/ (one parser per source, fixture-tested), normalise/, validate.py, publish.py
   db/           models.py, alembic/
 /web/           Next.js app (typed client generated from OpenAPI)
-/infra/         docker-compose.yml, Caddyfile, deploy manifests
+/infra/         docker-compose.yml, Dokploy deploy config, cloudflare/ (OpenTofu)
+justfile        one entry point for local and CI tasks (§9.1)
 /docs/rebuild/  these documents
 ```
 
@@ -442,8 +443,8 @@ publish   → write release rows (candidate) → embeddings for changed text →
 
 | Environment | Shape |
 |---|---|
-| Production | Start with 2 app nodes of 4 vCPU / 8 GB each and resize from the M1 load test (8 vCPU / 16 GB is the expected ceiling). Per node: `api` 2 workers, `web`, broker from M3, Umami. Target ≤ €200/month including VAT, Sentry Team, staging and CDN (COST-01). Load balancer or Caddy in front. Managed Postgres (2 vCPU / 4 GB, point-in-time recovery) also hosts the broker's database. CDN in front. EU region, on DTU-hosted infrastructure if available |
-| Staging | One node with everything in docker compose, seeded with the previous production release |
+| Production | Start with 2 app nodes of 4 vCPU / 8 GB each and resize from the M1 load test (8 vCPU / 16 GB is the expected ceiling). Per node: `api` 2 workers, `web`, broker from M3, Umami. Target ≤ €200/month including VAT, Sentry Team, staging and CDN (COST-01). Hosted on Dokploy (Traefik) behind a Cloudflare Tunnel, which also balances across the nodes (§9.1). Managed Postgres (2 vCPU / 4 GB, point-in-time recovery) also hosts the broker's database. CDN in front. EU region, on DTU-hosted infrastructure if available |
+| Staging | One Dokploy node with everything in docker compose, seeded with the previous production release; also hosts PR previews (§9.1) |
 | Local | `docker compose up` with a seeded snapshot (OPS-04) |
 
 **Verification:**
@@ -455,11 +456,30 @@ publish   → write release rows (candidate) → embeddings for changed text →
 - Alembic migrations follow the expand/contract pattern (OPS-05).
 - Health checks: `/healthz` (process up) and `/readyz` (snapshot loaded, with its release id).
 
+### 9.1 Hosting on Dokploy behind Cloudflare
+
+**Edge and origin:**
+- **No open ports on the nodes.** Traffic reaches Dokploy's Traefik only through a Cloudflare Tunnel (`cloudflared`, one connector per node). Fallback if the tunnel is unsuitable: firewall 80/443 to Cloudflare's IP ranges plus Authenticated Origin Pulls. The client IP still comes only from `CF-Connecting-IP` (SEC-03); with the tunnel, the origin trusts that header only on requests that arrived through `cloudflared`.
+- **Cloudflare Access in front of admin surfaces:** the Dokploy dashboard, the app's `/admin`, and preview deployments. GitHub-org or email-OTP sign-in with MFA. This is a second layer; `/admin` still checks the app's own admin role.
+- **Cloudflare config as code** (OpenTofu, in `/infra/cloudflare/`): DNS, the tunnel, Access apps, Cache Rules and WAF/rate-limit rules. The cache boundaries are security rules (`/course/*` and `/p/*` cached, `/s/*` and everything user-specific never cached, DTU egress allow-listed per SEC-03), so they are reviewed in PRs and not edited in the dashboard. CI runs `tofu plan` on PRs that touch them.
+
+**Build and deploy:**
+- **Images are built in GitHub Actions, never on the nodes,** so a build can't starve Postgres or the api during registration week. CI pushes immutable SHA-tagged images to GHCR, then calls Dokploy's deploy API/webhook to pull and roll out.
+- **PR preview environments** on the staging node: Dokploy preview deployments at `pr-<n>.preview.<domain>` (wildcard DNS), seeded with the staging snapshot, never the production database, `noindex`, and behind Cloudflare Access. They use the CI-built image for the PR, not a Dokploy build. Only PRs from branches in the repo get previews (fork PRs get no secrets).
+- **Post-deploy smoke test** (GitHub Actions, right after each staging, `beta.` and production rollout): `/readyz` reports the expected release id; `/course/02105` returns 200 with the CSP header and a `CF-Cache-Status` header; `/s/<fixture>` is never `HIT`; `/mcp/public` answers `tools/list` with the expected tool count. A failure alerts the Turing Council channel and blocks the next node in the rolling deploy.
+
+**Backups (SCAL-04):**
+- An off-provider copy goes to **Cloudflare R2** (EU jurisdiction bucket): a nightly `pg_dump`, 30-day retention via a lifecycle rule. If Postgres is the self-hosted container instead of managed, Dokploy's scheduled dumps alone don't meet the 15-minute RPO, so WAL archiving (WAL-G or pgBackRest) also goes to R2.
+- **Restore drill** as a scheduled GitHub Action (quarterly, per SCAL-04; monthly during the first term): pull the latest dump into an ephemeral Postgres 18 container, run sanity queries (latest release id, row counts against the previous drill), and alert on failure. The drill only reads R2 with a read-only key.
+
+**Developer experience:**
+- **`justfile`** as the one entry point: `just up` (wraps `docker compose up`, OPS-04), `just test`, `just lint`, `just migrate`, `just gen-client`, `just seed`. CI calls the same recipes, so local and CI can't drift.
+
 ## 10. Observability and operations (kept small)
 
 - **Logs:** structured JSON with the request id, a hash of the user id, `actor_kind` and the tool name.
 - **Sentry** on web and api, covering both errors and performance tracing. Its per-transaction throughput, error rate and latency are enough at launch.
-- **Uptime checker** on `/readyz` and the MCP endpoints.
+- **Uptime checker** on `/readyz` and the MCP endpoints, run **off-host** (Better Stack free tier or Cloudflare Health Checks), with a public `status.<domain>` page so students can tell during registration week whether the site or `kurser.dtu.dk` is down.
 - **One admin page** backed by Postgres:
   - pipeline runs and validation reports
   - release age
@@ -471,6 +491,10 @@ publish   → write release rows (candidate) → embeddings for changed text →
   - release older than the expected cadence
   - LLM budget at 50/80/100% (COST-02)
   - pipeline validation failures
+  - post-deploy smoke test and restore drill failures (§9.1)
+  - Cloudflare traffic-anomaly notifications
+- **Hard spend caps at the provider,** under the app-level quotas (COST-02): a monthly hard limit in the LLM provider's billing settings, and billing alerts on every paid account. The app quota is the first line; the provider cap is what stops a bug in the quota code.
+- **Handover (student-org bus factor):** every credential (Cloudflare, Dokploy, GHCR, Sentry, LLM provider, R2, DTU IT contacts) lives in a shared Turing Council vault (Bitwarden or 1Password organisation), owned by at least two people, never one person's account. `docs/runbook.md` (OPS-06) covers at least: roll back an app deploy, roll back a dataset release, restore the database, rotate each secret, hand over ownership.
 - **Analytics:** self-hosted and cookieless Umami, using the existing Postgres (Plausible would need ClickHouse). The bot vs human report comes from CDN logs (ADM-03, P1 / M3).
 - **MCP & assistant telemetry:** aggregate tool-call counts, error codes, empty-result rates and latency (no raw prompts). From M3, server-side assistant undo rate is derived from `plan_version` restores.
 
@@ -508,10 +532,10 @@ publish   → write release rows (candidate) → embeddings for changed text →
 
 | Milestone | Scope | Exit criteria |
 |---|---|---|
-| M0 Foundations (2–3 wk) | Repo, CI; domain metrics + parity script; pipeline for info, grades and evaluations (all years, periods/span, back-fill); Postgres schema; snapshot loader. **Auth spike (3 days):** pick Keycloak or Zitadel and prove that Claude and ChatGPT complete OAuth against a stub `/mcp` (CIMD or DCR, `aud` bound to `/mcp`) first against a mock OIDC identity provider or a personal Entra tenant (so M0 never waits on DTU IT), then against DTU's tenant once registered; check outbound-request (SSRF) protection, since CIMD makes the broker fetch client-supplied URLs; record the version and feature flags. Nothing is built on the result before M3. **Day 1:** request DTU's app registration for sign-in, because DTU IT lead time can be weeks | Parity on 50 reference courses; regression tests for the pipeline and metric bugs (requirements §5 items 9–15, 19) pass; auth decision recorded: a broker with its version and flags, or the no-broker fallback (§1) |
-| M1 Catalogue (3–4 wk) | Search with facets, exclusions and ranges; course page incl. "Similar"; recommender; public MCP tools on `/mcp/public`: `search_courses`, `get_courses`, `recommend_courses`, `validate_plan`, `parse_study_planner_text`, `get_dataset_info`; `/v1/tools`; schema CI check (strict mode + one small open model); capability-matrix CI test (AGT-13); dataset export; SEO; i18n scaffold; 5-student campus hallway usability tests on the beta | Public beta; all remaining §5 regression tests pass; PERF-02 met in a k6 test at 1,000 requests/s with the measured mix and one node drained; hallway tests validate the < 5 min clash-free planning flow for M2 |
-| M2 Planner = **Launch** (3–4 wk) | Local plans (up to 5) with timeline, week grid, spans, live checks via `validate_plan`, version undo, link/JSON export and import preview; public tools `make_plan_link`, `get_shared_plan` (templates with `start_term`), `list_templates`, `report_data_issue`; programme starter templates (SHR-05a); "Fill this term" (PLAN-07); inline "Report a data issue" on `/course/{code}` + `feedback` table + private Discord webhook (FDB-01, FDB-04; global feedback popover optional) | Starting from the programme starter template, a new student adjusts electives and reaches a term with no clashes in under 5 min (usability test, 5 students); an agent on `/mcp/public` builds a multi-term plan from a list of course codes and interests in ≤ 6 calls and hands it over with `make_plan_link`; accessibility audit of J1 passes |
-| M3 Accounts + agents (3 wk) | Auth broker (2 replicas) or the no-broker fallback (direct Entra OIDC + tokens), synced plans, `/mcp` with OAuth and the sign-in tools (`get_me`, `update_me`, `get_plan`, `create_plan`, `edit_plan`, `restore_plan_version`, `set_sharing`, `delete_plan`), owner approvals, `export_plan` (iCal), personal tokens, assistant with quota; compare (PLAN-11); exports (PLAN-08); self-hosted Umami (ADM-03); global feedback popover (if not in M2), assistant & `/discover` thumbs up/down, in-session micro-survey, `sentry_event_id` linkage and server-side assistant undo-rate tracking (FDB-02, FDB-03) | Agents in Claude and ChatGPT create and edit a plan end to end; a prompt-injection test (malicious shared-plan text) can't publish or delete anything; security review passed |
+| M0 Foundations (2–3 wk) | Repo, CI; domain metrics + parity script; pipeline for info, grades and evaluations (all years, periods/span, back-fill); Postgres schema; snapshot loader. **Auth spike (3 days):** pick Keycloak or Zitadel and prove that Claude and ChatGPT complete OAuth against a stub `/mcp` (CIMD or DCR, `aud` bound to `/mcp`) first against a mock OIDC identity provider or a personal Entra tenant (so M0 never waits on DTU IT), then against DTU's tenant once registered; check outbound-request (SSRF) protection, since CIMD makes the broker fetch client-supplied URLs; record the version and feature flags. Nothing is built on the result before M3. **Day 1:** request DTU's app registration for sign-in, because DTU IT lead time can be weeks. **Ops baseline (§9.1):** `justfile`, CI image builds to GHCR, OpenTofu for Cloudflare DNS and tunnel, shared credential vault | Parity on 50 reference courses; regression tests for the pipeline and metric bugs (requirements §5 items 9–15, 19) pass; auth decision recorded: a broker with its version and flags, or the no-broker fallback (§1) |
+| M1 Catalogue (3–4 wk) | Search with facets, exclusions and ranges; course page incl. "Similar"; recommender; public MCP tools on `/mcp/public`: `search_courses`, `get_courses`, `recommend_courses`, `validate_plan`, `parse_study_planner_text`, `get_dataset_info`; `/v1/tools`; schema CI check (strict mode + one small open model); capability-matrix CI test (AGT-13); dataset export; SEO; i18n scaffold; 5-student campus hallway usability tests on the beta | Public beta behind the Cloudflare Tunnel with Access on admin surfaces, cache rules in OpenTofu, PR previews, post-deploy smoke test, off-host uptime and status page, nightly R2 backups (§9.1); all remaining §5 regression tests pass; PERF-02 met in a k6 test at 1,000 requests/s with the measured mix and one node drained; hallway tests validate the < 5 min clash-free planning flow for M2 |
+| M2 Planner = **Launch** (3–4 wk) | Local plans (up to 5) with timeline, week grid, spans, live checks via `validate_plan`, version undo, link/JSON export and import preview; public tools `make_plan_link`, `get_shared_plan` (templates with `start_term`), `list_templates`, `report_data_issue`; programme starter templates (SHR-05a); "Fill this term" (PLAN-07); inline "Report a data issue" on `/course/{code}` + `feedback` table + private Discord webhook (FDB-01, FDB-04; global feedback popover optional) | Starting from the programme starter template, a new student adjusts electives and reaches a term with no clashes in under 5 min (usability test, 5 students); an agent on `/mcp/public` builds a multi-term plan from a list of course codes and interests in ≤ 6 calls and hands it over with `make_plan_link`; accessibility audit of J1 passes; runbook (§10) written and a rollback rehearsed on staging |
+| M3 Accounts + agents (3 wk) | Auth broker (2 replicas) or the no-broker fallback (direct Entra OIDC + tokens), synced plans, `/mcp` with OAuth and the sign-in tools (`get_me`, `update_me`, `get_plan`, `create_plan`, `edit_plan`, `restore_plan_version`, `set_sharing`, `delete_plan`), owner approvals, `export_plan` (iCal), personal tokens, assistant with quota; compare (PLAN-11); exports (PLAN-08); self-hosted Umami (ADM-03); global feedback popover (if not in M2), assistant & `/discover` thumbs up/down, in-session micro-survey, `sentry_event_id` linkage and server-side assistant undo-rate tracking (FDB-02, FDB-03) | Agents in Claude and ChatGPT create and edit a plan end to end; a prompt-injection test (malicious shared-plan text) can't publish or delete anything; security review passed; provider-level LLM spend cap set; first restore drill from R2 passed before user data goes live |
 | M4 Community (2–3 wk) | Sharing with SHR-09 privacy rules, gallery, forks, stars, curated templates (SHR-05b), k-anonymous signals (`often_planned_with`, `planned_by_count`, popularity sort), `star_plan`, moderation | 10 curated templates live; moderation runbook |
 | Later | Programme rules (CAT-16), "fits my plan" search filter (SRCH-04), user's own LLM key (AGT-11), exam calendar | — |
 
@@ -585,3 +609,5 @@ An agent-parity evaluation and a review of the resulting proposal ([05-agent-par
 - **Plan items** get an `item_id`, and fixes come back as machine-readable `fix_ops`.
 - **Limits:** rate limits are cost-weighted.
 - **Parity is a CI-tested capability matrix (AGT-13).**
+
+An infrastructure review (2026-11-21) added the Dokploy + Cloudflare operations in §9.1 and §10: Cloudflare Tunnel with no open ports, Cloudflare Access on admin surfaces and previews, Cloudflare config in OpenTofu, CI-built GHCR images, PR previews, post-deploy smoke tests, R2 backups with restore drills, a `justfile`, off-host uptime with a status page, provider-level spend caps, and a shared vault plus runbook for handover. The user set aside pinning GitHub Actions to commit SHAs and a local gitleaks pre-commit hook.
