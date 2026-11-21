@@ -47,8 +47,8 @@ The current site is built for browsing. A student can look courses up but can't 
 /about /methodology /faq /privacy /data
 ```
 
-- **Global header:** search with a ⌘K command palette; a "My plan" pill showing the active plan's name, the current term's ECTS and a warning count; the assistant toggle (signed-in users, from M3); language and theme switches; sign in. Everything user-specific in the header loads in the browser, because the page itself is a cached anonymous shell.
-- **Global footer:** the dataset's data-as-of date and a link to the methodology page.
+- **Global header:** search with a ⌘K command palette (which also opens the feedback popover from M3, FDB-02); a "My plan" pill showing the active plan's name, the current term's ECTS and a warning count; the assistant toggle (signed-in users, from M3); language and theme switches; sign in. Everything user-specific in the header loads in the browser, because the page itself is a cached anonymous shell.
+- **Global footer:** the dataset's data-as-of date, a link to the methodology page, and a "Feedback" trigger (FDB-02).
 
 ## 4. Key journeys
 
@@ -127,6 +127,7 @@ The assistant is a docked side panel on desktop and a bottom sheet on mobile. It
 - **Answers cite courses as chips** that link to the course page and have "Add" buttons.
 - **Writes appear as diff cards** ("+ 02450 → Spring 2028"). These are applied immediately and can be undone by restoring the previous version. Publishing, sharing grades and deleting show an Approve button and are never applied without it.
 - **Quota.** A quiet "N messages left today" appears when the user gets close to the limit. If the LLM is down: "Assistant unavailable, everything else works."
+- **Inline rating (FDB-02).** Each answer has thumbs up / thumbs down; thumbs down reveals optional reason chips (e.g. *Hallucinated prerequisite*, *Schedule clash missed*, *Not relevant*) without requiring free text.
 
 ### J5. Share and get feedback
 
@@ -170,6 +171,7 @@ The comparison is a table with one row per field: metrics with distributions, sc
 Covered in J1.
 - **History:** a year switcher (`/course/{code}/{year}`) for historical offerings.
 - **Discontinued courses:** a banner pointing to the successor (any course that lists it in `previous_codes`).
+- **Report a data issue (FDB-01, P0 / M2):** a subtle no-login control near the course metadata/footer with a 1-click kind picker (*Wrong schedule*, *Wrong prerequisites*, *Missing grades*, *Other*) and an optional note. Auto-attaches `course_code` and `dataset_release_id`.
 
 ### 5.4 Home `/`
 - **Hero:** a large search box with the line "Search 1,750 DTU courses by name, code or what you want to learn".
@@ -192,6 +194,16 @@ Covered in J1.
 | LLM provider down | "Assistant unavailable, everything else works" |
 | Empty or new gallery | Curated and starter templates only, with "Share yours" |
 | Zero search results | Suggestions to remove a filter, with the count each would give |
+
+### 5.6 Feedback and micro-survey (FDB-01–FDB-04)
+
+- **At launch (M2, P0):** Inline "Report a data issue" on `/course/{code}` (backed by `report_data_issue`, also available on `/mcp/public`). The global feedback popover is optional for M2.
+- **Post-launch (M3, P1):**
+  - **Global feedback popover** (footer + `⌘K`): type picker (Bug / Idea / Data issue), free text, and optional contact if the student wants a reply. No login required. Automatically attaches `sentry_event_id` when opened right after an error.
+  - **Assistant & `/discover` ratings:** thumbs up/down with optional reason chips.
+  - **In-session micro-survey:** a single non-blocking bottom-corner card triggered only by an in-session value event (e.g. adding a 4th course to a plan or sharing/exporting a plan) — never on landing and never via a multi-day visit counter in `localStorage`. Stores only a `dismissed` boolean preference (confirm ePrivacy Art. 5(3) strict necessity with the `PRIV-01` data controller).
+- **Privacy & routing:** URLs are scrubbed before sending (`#v1…` plan hashes stripped, `/s/{slug}` link-only share URLs redacted). Submissions go to Postgres and a private Turing Council Discord channel only (never auto-creating public GitHub issues); entire rows are purged or redacted after 90 days or upon resolution.
+- **Usability testing:** Run the 5-student campus hallway tests during the **M1 public beta** to validate the M2 exit criterion (clash-free first term in < 5 minutes).
 
 ## 6. Design system
 
@@ -231,9 +243,9 @@ Covered in J1.
 |---|---|
 | Course page → "Add to plan" conversion | ≥ 15% of visits that arrive from kurser.dtu.dk |
 | Students with a synced plan | ≥ 2,000 |
-| Time to a first term with no clashes (usability test) | < 5 min median |
+| Time to a first term with no clashes (usability test, 5 students at M1 beta) | < 5 min median |
 | Plans shared (unlisted + public) | ≥ 10% of synced plans |
 | MCP-connected users (distinct tokens used weekly) | ≥ 300 |
-| Assistant: share of answers where the user later added a course mentioned in that answer | Track; target set after 1 month of data |
+| Assistant: share of answers where the user later added a course mentioned in that answer, and server-side undo rate on assistant plan edits (M3) | Track; target set after 1 month of data |
 | Accessibility | 0 serious axe violations on key routes; screen-reader walkthrough of J1 passes |
 | p75 LCP on course page (mobile) | < 2.0 s |

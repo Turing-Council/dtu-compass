@@ -121,6 +121,9 @@ plan_star(plan_id, user_id)  ·  plan_report(plan_id, reporter_id, reason, creat
 personal_token(id, user_id, name, hash, scopes[], last_used_at, revoked_at)
 assistant_conversation(id, user_id, context jsonb, created_at)  ·  assistant_message(conv_id, role, content jsonb, tokens_in, tokens_out, created_at)
 llm_usage_daily(user_id, day, tokens_in, tokens_out, cost_eur)
+feedback(id uuid, created_at, source[web|mcp], category[data_issue|bug|idea|assistant_vote|survey],
+         course_code null, dataset_release_id null, sentry_event_id null, rating smallint null,
+         message text null, contact text null, context jsonb, status[new|triaged|resolved|wontfix])
 ```
 
 How the requirements map onto these tables:
@@ -142,6 +145,7 @@ How the requirements map onto these tables:
   - A browser holds up to 5 local plans. Opening an import link shows a preview and adds the plan alongside the others; nothing is overwritten.
   - On login the student chooses which local plans to import; each becomes `create_plan(from_plan_json)`.
 - **`pending_approval`:** holds owner-approval actions requested by agents or the assistant (AGT-08, §6).
+- **`feedback` (FDB-01–FDB-04):** stores data-issue reports, UI feedback, assistant/recommender votes and in-session micro-survey responses. `source`, `course_code`, `dataset_release_id` and `sentry_event_id` are real indexed columns for triage and grouping; `context` holds scrubbed `route` (`#v1…` plan hashes stripped and `/s/{slug}` link-only share URLs redacted to `/s/[redacted]`), `app_version`, `viewport`, `theme`, `locale` and `is_signed_in` (boolean). New rows fire an async webhook to a private Turing Council Discord channel (never auto-creating public GitHub issues); 3+ reports on the same `(course_code, dataset_release_id)` are surfaced as a triage hint, not an alarm. Entire rows (including free-text `message`) are purged or redacted after 90 days or upon resolution.
 
 ## 4. Catalogue serving (the hot path)
 
@@ -234,7 +238,7 @@ def edit_plan(ctx: ToolCtx, inp: EditPlanIn) -> EditPlanOut:
 - Course text is truncated unless `detail="full"`.
 - Text that didn't come from us is always in `*_untrusted` fields and is shown as plain text in the UI. That covers scraped DTU free text and every plan title, description and tag, including the caller's own plans, because they may have been imported or forked.
 
-### 5.1 Tool surface (19 tools)
+### 5.1 Tool surface (20 tools)
 
 **Public tools.** No account needed; available on `/mcp/public` and `/mcp`.
 
@@ -250,6 +254,7 @@ def edit_plan(ctx: ToolCtx, inp: EditPlanIn) -> EditPlanOut:
 | `list_templates(programme?, start_year?, tags[]?, kind=starter\|curated\|community\|all, sort=stars\|forks\|recent, cursor?)` | Gallery browsing with the UI's filters | **Specialisation:** expressed as a tag (SHR-04). |
 | `get_dataset_info()` | Release id, data-as-of dates, embedding model | **Valid filter values:** study lines with codes, departments, slots, periods, so agents can discover them. <br>**Replaces:** `list_study_lines`. |
 | `export_plan(plan_id \| plan_json \| plan_link, format=ics)` | iCal of the weekly slots when term dates are known | **When:** M3 (PLAN-08, P1). <br>**Why iCal only:** Markdown and CSV can be produced from the plan JSON the agent already has; PDF and image stay web renders. |
+| `report_data_issue(course_code, kind=schedule\|prereqs\|grades\|other, note?)` | Report wrong or missing scraped course data (FDB-01) | **When:** M2 (P0). Writes to `feedback` with `source='mcp'` (or `'web'` via REST), `dataset_release_id` from the loaded snapshot, and a 4 KB body cap. Uses the SEC-03 campus-safe rate limit. |
 
 **Sign-in tools.** OAuth required; `/mcp` only.
 
@@ -310,6 +315,7 @@ Every capability in the UI maps to a tool or is web-only for a stated reason. A 
 | Gallery, templates, star | `list_templates`, `get_shared_plan`, `star_plan` |
 | Profile: programme, start term, language | `get_me`, `update_me` |
 | iCal export | `export_plan` |
+| Report a data issue on a course (FDB-01) | `report_data_issue` |
 
 **Web-only, with reasons:**
 - **Approving pending actions:** this is the human check itself.
@@ -317,6 +323,7 @@ Every capability in the UI maps to a tool or is web-only for a stated reason. A 
 - **Personal tokens and connected-agent grants (ACC-05):** credentials.
 - **Display name and aggregate opt-in:** consent and identity.
 - **Reporting plans (SHR-07):** abuse would scale with automation.
+- **Global feedback popover, assistant ratings and micro-survey (FDB-02, FDB-03):** UI-specific feedback surfaces.
 - **Admin (ADM-02).**
 - **PDF and image export:** rendered by the web.
 - Presentation-only UI (drag handles, week-grid rendering, OG images) is not a capability.
@@ -329,6 +336,7 @@ Every capability in the UI maps to a tool or is web-only for a stated reason. A 
 - `/api/tokens/*`
 - `/api/account/*`
 - `/api/reports`
+- `/api/feedback`
 
 ### 5.4 The "build my whole plan" workflow
 
@@ -389,6 +397,7 @@ The assistant uses any OpenAI-compatible Chat Completions endpoint, configured w
   - Admin is a broker group claim.
 - **Rate limits (SEC-03):**
   - Per-IP limits apply only to uncached expensive calls. DTU egress ranges are allow-listed.
+  - Anonymous feedback (`report_data_issue` and `POST /api/feedback`) follows the same rule: DTU egress ranges are allow-listed, non-DTU IPs get a loose per-IP limit, and abuse is caught by a honeypot field plus a 4 KB body cap (never a tight per-IP cap that blocks campus NAT).
   - Limits are cost-weighted by the registry's per-tool weight: e.g. `search_courses` 1, `get_courses` 1 per 10 codes (summary) or per code (full), `recommend_courses` 3, `validate_plan` 1, `edit_plan` 2. Any call with `codes[]`, `within_codes` or a plan is uncached and counted, never treated as a cached catalogue read.
   - The real client IP comes only from the CDN's header, and only on requests from the CDN's IP ranges.
   - Per-user and per-token limits for writes and the assistant are counted in Postgres (exact across replicas). Per-IP counters are in-memory per replica (approximate, acceptable).
@@ -456,13 +465,14 @@ publish   → write release rows (candidate) → embeddings for changed text →
   - release age
   - LLM tokens and cost per model
   - quota rejections
-  - pending reports
+  - pending reports and feedback (3+ reports on the same `(course_code, dataset_release_id)` highlighted as a triage hint)
 - **Alerts:**
   - Sentry error-rate and p95 alerts
   - release older than the expected cadence
   - LLM budget at 50/80/100% (COST-02)
   - pipeline validation failures
-- **Analytics:** self-hosted and cookieless Umami, using the existing Postgres (Plausible would need ClickHouse). The bot vs human report comes from CDN logs (ADM-03).
+- **Analytics:** self-hosted and cookieless Umami, using the existing Postgres (Plausible would need ClickHouse). The bot vs human report comes from CDN logs (ADM-03, P1 / M3).
+- **MCP & assistant telemetry:** aggregate tool-call counts, error codes, empty-result rates and latency (no raw prompts). From M3, server-side assistant undo rate is derived from `plan_version` restores.
 
 ## 11. Deliberately not used yet, and when to add them
 
@@ -499,9 +509,9 @@ publish   → write release rows (candidate) → embeddings for changed text →
 | Milestone | Scope | Exit criteria |
 |---|---|---|
 | M0 Foundations (2–3 wk) | Repo, CI; domain metrics + parity script; pipeline for info, grades and evaluations (all years, periods/span, back-fill); Postgres schema; snapshot loader. **Auth spike (3 days):** pick Keycloak or Zitadel and prove that Claude and ChatGPT complete OAuth against a stub `/mcp` (CIMD or DCR, `aud` bound to `/mcp`) first against a mock OIDC identity provider or a personal Entra tenant (so M0 never waits on DTU IT), then against DTU's tenant once registered; check outbound-request (SSRF) protection, since CIMD makes the broker fetch client-supplied URLs; record the version and feature flags. Nothing is built on the result before M3. **Day 1:** request DTU's app registration for sign-in, because DTU IT lead time can be weeks | Parity on 50 reference courses; regression tests for the pipeline and metric bugs (requirements §5 items 9–15, 19) pass; auth decision recorded: a broker with its version and flags, or the no-broker fallback (§1) |
-| M1 Catalogue (3–4 wk) | Search with facets, exclusions and ranges; course page incl. "Similar"; recommender; public MCP tools on `/mcp/public`: `search_courses`, `get_courses`, `recommend_courses`, `validate_plan`, `parse_study_planner_text`, `get_dataset_info`; `/v1/tools`; schema CI check (strict mode + one small open model); capability-matrix CI test (AGT-13); dataset export; SEO; i18n scaffold | Public beta; all remaining §5 regression tests pass; PERF-02 met in a k6 test at 1,000 requests/s with the measured mix and one node drained |
-| M2 Planner = **Launch** (3–4 wk) | Local plans (up to 5) with timeline, week grid, spans, live checks via `validate_plan`, version undo, link/JSON export and import preview; public tools `make_plan_link`, `get_shared_plan` (templates with `start_term`), `list_templates`; programme starter templates (SHR-05a); "Fill this term" (PLAN-07) | Starting from the programme starter template, a new student adjusts electives and reaches a term with no clashes in under 5 min (usability test, 5 students); an agent on `/mcp/public` builds a multi-term plan from a list of course codes and interests in ≤ 6 calls and hands it over with `make_plan_link`; accessibility audit of J1 passes |
-| M3 Accounts + agents (3 wk) | Auth broker (2 replicas) or the no-broker fallback (direct Entra OIDC + tokens), synced plans, `/mcp` with OAuth and the sign-in tools (`get_me`, `update_me`, `get_plan`, `create_plan`, `edit_plan`, `restore_plan_version`, `set_sharing`, `delete_plan`), owner approvals, `export_plan` (iCal), personal tokens, assistant with quota; compare (PLAN-11); exports (PLAN-08) | Agents in Claude and ChatGPT create and edit a plan end to end; a prompt-injection test (malicious shared-plan text) can't publish or delete anything; security review passed |
+| M1 Catalogue (3–4 wk) | Search with facets, exclusions and ranges; course page incl. "Similar"; recommender; public MCP tools on `/mcp/public`: `search_courses`, `get_courses`, `recommend_courses`, `validate_plan`, `parse_study_planner_text`, `get_dataset_info`; `/v1/tools`; schema CI check (strict mode + one small open model); capability-matrix CI test (AGT-13); dataset export; SEO; i18n scaffold; 5-student campus hallway usability tests on the beta | Public beta; all remaining §5 regression tests pass; PERF-02 met in a k6 test at 1,000 requests/s with the measured mix and one node drained; hallway tests validate the < 5 min clash-free planning flow for M2 |
+| M2 Planner = **Launch** (3–4 wk) | Local plans (up to 5) with timeline, week grid, spans, live checks via `validate_plan`, version undo, link/JSON export and import preview; public tools `make_plan_link`, `get_shared_plan` (templates with `start_term`), `list_templates`, `report_data_issue`; programme starter templates (SHR-05a); "Fill this term" (PLAN-07); inline "Report a data issue" on `/course/{code}` + `feedback` table + private Discord webhook (FDB-01, FDB-04; global feedback popover optional) | Starting from the programme starter template, a new student adjusts electives and reaches a term with no clashes in under 5 min (usability test, 5 students); an agent on `/mcp/public` builds a multi-term plan from a list of course codes and interests in ≤ 6 calls and hands it over with `make_plan_link`; accessibility audit of J1 passes |
+| M3 Accounts + agents (3 wk) | Auth broker (2 replicas) or the no-broker fallback (direct Entra OIDC + tokens), synced plans, `/mcp` with OAuth and the sign-in tools (`get_me`, `update_me`, `get_plan`, `create_plan`, `edit_plan`, `restore_plan_version`, `set_sharing`, `delete_plan`), owner approvals, `export_plan` (iCal), personal tokens, assistant with quota; compare (PLAN-11); exports (PLAN-08); self-hosted Umami (ADM-03); global feedback popover (if not in M2), assistant & `/discover` thumbs up/down, in-session micro-survey, `sentry_event_id` linkage and server-side assistant undo-rate tracking (FDB-02, FDB-03) | Agents in Claude and ChatGPT create and edit a plan end to end; a prompt-injection test (malicious shared-plan text) can't publish or delete anything; security review passed |
 | M4 Community (2–3 wk) | Sharing with SHR-09 privacy rules, gallery, forks, stars, curated templates (SHR-05b), k-anonymous signals (`often_planned_with`, `planned_by_count`, popularity sort), `star_plan`, moderation | 10 curated templates live; moderation runbook |
 | Later | Programme rules (CAT-16), "fits my plan" search filter (SRCH-04), user's own LLM key (AGT-11), exam calendar | — |
 
