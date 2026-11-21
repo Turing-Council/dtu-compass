@@ -7,8 +7,10 @@ categories:
     labels: ['type:bug', 'type:regression']
   - title: 'Maintenance & CI'
     labels: ['type:chore', 'dependencies']
-  - title: 'Other Changes'
-    label: '*'
+template: |
+  ## Changes
+
+  $CHANGES
 change-template: '- $TITLE @$AUTHOR (#$NUMBER)'
 autolabeler:
   - label: 'type:feature'
