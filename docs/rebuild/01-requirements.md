@@ -201,9 +201,18 @@ Browse, home and recommend requests re-parse JSON files on disk every time, whic
 | ID | Requirement | Origin | Pri |
 |---|---|---|---|
 | ADM-01 | Pages for About, FAQ (rewritten), methodology ("how metrics are computed", generated from the shared formula module), data freshness and privacy | E/N | P0 |
-| ADM-02 | Admin console: dataset releases (validation report, publish, roll back), pipeline runs and logs, reported plans, curated templates, LLM usage and cost | N | P1 |
+| ADM-02 | Admin console: dataset releases (validation report, publish, roll back), pipeline runs and logs, reported plans, feedback triage, curated templates, LLM usage and cost | N | P1 |
 | ADM-03 | Privacy-friendly usage analytics (cookieless, self-hosted Umami on the existing Postgres) replacing Google Analytics without consent, plus the bot/human page-view report that today's log analyser produces | E/F | P1 |
 | ADM-04 | Remove leftover routes and pages: `/test`, `/wip`, `/recommender_v1`, `/recommender_v2`, dead templates | F | P0 |
+
+### 3.11 Feedback (FDB)
+
+| ID | Requirement | Origin | Pri |
+|---|---|---|---|
+| FDB-01 | **Inline data-issue reporting.** Course pages (`/course/{code}`) include a no-login "Report a data issue" control (kind: `schedule`, `prereqs`, `grades`, `other` + optional note), also exposed as `report_data_issue(course_code, kind, note?)` on `/mcp/public` and `/mcp` (AGT-13) | N | P0 |
+| FDB-02 | **Global feedback and assistant ratings.** A no-login feedback popover in the footer and `⌘K` palette (bug, idea or data issue, free text, optional contact) and thumbs up/down with optional reason chips on assistant and `/discover` results. Listed on the `AGT-13` web-only allow-list | N | P1 |
+| FDB-03 | **In-session micro-survey.** Triggered only by in-session value events (e.g. adding a 4th course or sharing/exporting a plan), never on landing and never via a multi-day visit counter. Stores only a `dismissed` preference flag in `localStorage` (ePrivacy Art. 5(3) strict necessity confirmed with the `PRIV-01` data controller) | N | P1 |
+| FDB-04 | **Feedback privacy, routing and retention.** Anonymous by default; auto-captures scrubbed context (stripping `#v1…` plan hashes and redacting `/s/{slug}` link-only share URLs) and `sentry_event_id` when following an error; pushes notifications only to a private Turing Council Discord channel (never auto-creating public GitHub issues); purges or redacts the entire row after 90 days or upon resolution | N | P0 |
 
 ---
 
@@ -235,7 +244,7 @@ Browse, home and recommend requests re-parse JSON files on disk every time, whic
 |---|---|
 | SEC-01 | Scraped HTML is sanitised with an allow-list at ingest. Nothing is rendered with `|safe` or `dangerouslySetInnerHTML` without sanitising first. A strict Content Security Policy is in place. |
 | SEC-02 | All input is validated against schemas. Search terms are never used as regular expressions (today they are, which allows CPU-exhausting patterns). Request bodies are limited in size. |
-| SEC-03 | Rate limits. Cached anonymous catalogue reads have no per-IP limit (the CDN absorbs them; thousands of students share a few DTU NAT/eduroam IPs). Uncached expensive calls (semantic search, recommend, MCP `tools/call` on `/mcp/public`) are limited per IP at about 10/s with a high burst, and DTU egress ranges are allow-listed. Writes (5 calls/s; a batch of up to 100 ops counts as one call) and the assistant (COST-02) are limited per user or token. Limits are cost-weighted per tool, and calls carrying code lists or plans are never treated as cached reads. The real client IP is read only from the CDN's header, trusting only the CDN's IP ranges. |
+| SEC-03 | Rate limits. Cached anonymous catalogue reads have no per-IP limit (the CDN absorbs them; thousands of students share a few DTU NAT/eduroam IPs). Uncached expensive calls (semantic search, recommend, MCP `tools/call` on `/mcp/public`) are limited per IP at about 10/s with a high burst, and DTU egress ranges are allow-listed. Anonymous feedback (`report_data_issue` and `POST /api/feedback`) uses the same DTU egress allow-list with a loose per-IP limit for other IPs, plus a honeypot field and a 4 KB body cap. Writes (5 calls/s; a batch of up to 100 ops counts as one call) and the assistant (COST-02) are limited per user or token. Limits are cost-weighted per tool, and calls carrying code lists or plans are never treated as cached reads. The real client IP is read only from the CDN's header, trusting only the CDN's IP ranges. |
 | SEC-04 | Secrets come from the environment or a secret manager; there are no fallback default keys. Debug is never on in production. Dependencies pinned and scanned (Dependabot or Renovate). |
 | SEC-05 | OAuth 2.1 with PKCE. Tokens are short-lived with refresh, and scoped. Personal access tokens are stored hashed and can be revoked. Every write records who made it (user, agent client, or assistant). |
 | SEC-06 | Prompt injection. The real control is authorisation: a caller can write only to its own plans, and owner-approval actions (AGT-08) need the human in the web app. On top of that, every tool output puts user-generated text (shared plan titles and descriptions) and scraped DTU free text in fields named `*_untrusted`, and tool descriptions say to treat them as data; this applies to third-party agents as well as the built-in assistant. |
