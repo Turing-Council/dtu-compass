@@ -1,0 +1,40 @@
+name: Feature / Task
+description: Implement a requirement or milestone task from docs/rebuild/
+labels: ["type:feature"]
+body:
+  - type: input
+    id: req_ids
+    attributes:
+      label: Requirement IDs
+      description: Comma-separated IDs from docs/rebuild/01-requirements.md (if applicable)
+      placeholder: "PLAN-12, AGT-02, OPS-02"
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      options:
+        - backend
+        - web
+        - pipeline
+        - mcp
+        - infra
+        - docs
+    validations:
+      required: true
+  - type: textarea
+    id: summary
+    attributes:
+      label: Summary
+      description: What are we building and why?
+    validations:
+      required: true
+  - type: textarea
+    id: acceptance
+    attributes:
+      label: Acceptance Criteria
+      description: Concrete exit conditions (tests, metrics, behaviours)
+      value: |
+        - [ ] Unit/integration tests added
+        - [ ] Docs or OpenAPI schema updated if applicable
+    validations:
+      required: true

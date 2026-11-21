@@ -1,0 +1,33 @@
+name: Bug / Regression
+description: Report a bug or track a v1 regression from 01-requirements.md §5
+labels: ["type:bug"]
+body:
+  - type: input
+    id: v1_bug
+    attributes:
+      label: v1 Regression Reference (optional)
+      placeholder: "§5 #9 (Overworked % denominator)"
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      options:
+        - backend
+        - web
+        - pipeline
+        - mcp
+        - infra
+    validations:
+      required: true
+  - type: textarea
+    id: repro
+    attributes:
+      label: Steps to Reproduce
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected vs Actual Behaviour
+    validations:
+      required: true

@@ -1,0 +1,5 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Architecture & Rebuild Plan
+    url: https://github.com/Turing-Council/dtu-compass/tree/main/docs/rebuild
+    about: Check requirements (01-requirements.md) and architecture (02-architecture.md) before opening an issue.
