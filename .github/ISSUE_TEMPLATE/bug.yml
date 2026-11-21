@@ -2,6 +2,10 @@ name: Bug / Regression
 description: Report a bug or track a v1 regression from 01-requirements.md §5
 labels: ["type:bug"]
 body:
+  - type: markdown
+    attributes:
+      value: |
+        This issue is public. Don't paste personal data (names, student numbers, grades, screenshots of someone's plan). Security problems go through [SECURITY.md](https://github.com/Turing-Council/dtu-compass/blob/main/SECURITY.md) instead.
   - type: input
     id: v1_bug
     attributes:
@@ -17,6 +21,7 @@ body:
         - pipeline
         - mcp
         - infra
+        - docs
     validations:
       required: true
   - type: textarea

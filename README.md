@@ -11,4 +11,5 @@
 ---
 
 - **Architecture & Planning:** [`docs/rebuild/`](docs/rebuild/README.md)
+- **Contributing:** [`CONTRIBUTING.md`](CONTRIBUTING.md) · AI agents: [`AGENTS.md`](AGENTS.md) · [Security](SECURITY.md)
 - **License:** [MIT](LICENSE)
